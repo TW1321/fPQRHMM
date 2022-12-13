@@ -1,0 +1,670 @@
+---
+title: "Extending  Dimension Reduction to the Quantile Regression Framework"
+author: "STSCI 6520 Capstone Project"
+date: '2022-12-12'
+output:
+  pdf_document: 
+    number_sections: TRUE
+  html_document: 
+    number_sections: TRUE
+header-includes:
+  \usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Abstract
+For my project, I will be focusing on two algorithms to handle $P \approx N$ within the quantile regression framework. The first is the Fast Partial Quantile Regression (fPQR) algorithm, developed by M$\acute{e}$ndez-Civieta et al. in 2021, which takes the NIPALs algorithm used for Partial Least Squares Regression, and replaces covariance with a a quantile analog developed by Li et al.[1]. The second is a hierarchical mixture model (HMM) developed by Bar et al. in 2021, wherein you use a Generalized Alternating Minimization (GAM) algorithm to learn which predictors have negative, zero, or positive coefficients [3]. I propose a novel algorithm that combines these two approaches by using the fPQR algorithm to decompose the predictor matrix into orthogonal components, and then perform quantile regression of Y on these orthogonal components, using the HMM algorithm to determine which of these components have non-zero coefficients. I compare this to a baseline of performing quantile regression of Y on the original predictors, also using the HMM algorithm for variable selection. These two algorithms are compared in a variety of simulation settings with $P \approx N$, including high and low correlation among predictors, dense or sparse $\beta$, small or large $\beta$, and different quantiles predicted. Using just HMM has better prediction accuracy with sparse $\beta$ and low or moderate correlation among the predictors, with the combined method of fPQRHMM performing better everywhere else. However. fPQRHMM still seems to have trouble identifying the true model when $\beta$ is large, indicating alternative approaches, such as pre-selection using LASSO or cross-validation error, should be explored in doing variable selection on orthogonal components.
+
+
+# Introduction
+
+## Background
+Assume you have a response vector $Y \in \mathbb{R}^N$, predictor matrix $X \in \mathbb{R}^{N \times P}$, and $\tau \in (0,1)$. For quantile regression, we want to find a function $q$ such that
+
+\begin{equation}
+q_{Y_i|X_i}(\tau)=X_i\beta_{\tau}
+\end{equation}
+
+ where $q_{Y_i|X_i}(\tau)$ is the predicted $\tau^{th}$ quantile of $Y_i$ given $X_i$ [1]. You can solve for $\beta_{\tau}$ through the minimization problem 
+
+\begin{equation}
+\hat{\beta}_{\tau}= \underset{\beta}{argmin} \sum_{i=1}^{n} \rho_{\tau}(Y_i- X_i\beta)
+\end{equation} 
+
+
+ where
+ 
+\begin{equation}
+\rho_{\tau}(u)= u*(\tau - \mathbb{I}(u<0))
+\end{equation}
+
+is the check loss function [1]. Equation (2) cannot be solved analytically, but can be solved numerically in a variety of ways, including through linear programming, Expectation Maximization (EM) algorithms, or Generalized Alternating Minimization (GAM) algorithms.
+
+
+## Motivation
+
+Quantile regression holds a number of advantages over linear regression. First, quantile regression allows you to visualize the location, scale, and shape of $Y|X$ [3]. This can potentially yield more insight than just seeing the conditional mean from linear regression, as evidenced by a study by Koenker and Hallock in 2001, where they found that the weight disparity between male and female babies was smaller for lower quantiles than it was for higher quantiles [1]. Second, quantile regression is more resistant to outliers [1]. Finally, quantile regression is better suited to the case where  the residuals are skewed (i.e. $\chi^2$) or heteroscedastic (i.e. $Normal(0, 0.1+X_1)$)[1].
+
+# Previous Methods
+My project will be focusing on two algorithms for dealing with $P \approx N$  within the quantile regression framework: fast Partial Quantile Regression (fPQR) [1], and a hierarchical mixture model [2].
+
+## Fast Partial Quantile Regression
+
+### Quantile Covariance
+
+The fPQR algorithm primarily depends on establishing an analog of covariance linked specifically to the quantile you are trying to estimate, known as quantile covariance. I will discuss three versions of quantile covariance mentioned in [1].
+
+#### Dodge and Whittaker [2009] \newline
+\
+ For this version of quantile covariance, for two variables $Z_1$ and $Z_2$, you first solve quantile regression of $Z_2$ on $Z_1$ to find
+ 
+\begin{equation}
+\overset{\sim}{\beta}= \underset{\beta}{argmin}  E[\rho_{\tau}(Z_2- \beta Z_1)]
+\end{equation}
+ 
+and then you define the quantile covariance as
+  
+\begin{equation}
+qcov_{\tau}^D(Z_1, Z_2)=var(Z_1)\overset{\sim}{\beta}
+\end{equation}
+[1]. Note that unlike with traditional covariance, this version of quantile covariance is not symmetric [1]. One of the main flaws for this version, however, is that if you have a vector $U=(U_1 , \ldots, U_m)$ then, 
+\begin{equation}
+qcov_{\tau}^D(U, Z_2) \neq ( qcov_{\tau}^D(U_1, Z_2), \ldots, qcov_{\tau}^D(U_m, Z_2))
+\end{equation}
+
+
+[1]. Thus, if you want your computation of quantile covariance to remain the same regardless of the length of $U$, you must perform $m$ univariate quantile regression models [1]. Thus, the computation time greatly increases as you increase $m$, which would limit your ability to perform quantile regression when you have a multivariate response variable. 
+
+
+#### Choi and Shin [2018] \newline
+\
+ For this version of quantile covariance, you solve quantile regression of $Z_2$ on $Z_1$ and $Z_1$ on $Z_2$ to get coefficients $\beta_{1,2}(\tau)$ and $\beta_{2,1}(\tau)$ respectively [1]. You then calculate the quantile correlation between $Z_1$ and $Z_2$ as the geometric mean of these two slopes:
+ 
+\begin{equation}
+qcor_{\tau}^{CS}(Z_1, Z_2)=sign(\beta_{2,1}(\tau))\sqrt{(\beta_{1,2}(\tau)\beta_{2,1}(\tau))}
+\end{equation}
+
+and then you define the quantile covariance as
+
+\begin{equation}
+qcov_{\tau}^{CS}(Z_1, Z_2)=sign(\beta_{2,1}(\tau))\sqrt{qcov_{\tau}^D(Z_1, Z_2)qcov_{\tau}^D(Z_2, Z_1)}
+\end{equation}
+
+[1]. Unlike with Dodge and Whittaker, this version of quantile covariance is symmetric [1]. This version of quantile covariance also has the flaw specified in equation (6), except that if $U$ is of dimension $m$, you must calculate $2m$ univariate quantile regression models, instead of just $m$ [1]. 
+
+#### Li et al. [2015] \newline
+\
+ For this version, you define the quantile covariance as 
+ 
+\begin{equation}
+qcov_{\tau}^{Li}(Z_1, Z_2)=cov\{\mathbb{I}(Z_2- Q_{\tau, Z_2}), Z_1\}\\
+=E[\psi_{\tau}(Z_2-Q_{\tau, Z_2})(Z_1-EZ_1)]
+\end{equation}
+where $Q_{\tau, Z_2}$ is the $\tau^{th}$ quantile of $Z_2$ and
+
+\begin{equation}
+\psi_{\tau}(\omega)= \tau- \mathbb{I}(\omega<0)
+\end{equation}
+
+[1]. Like with Dodge and Whittaker, this version of quantile covariance is not symmetric [1]. However, this version of quantile covariance also has the advantage over the two previous versions of being easily adaptable to a random vector without increasing computation time, and yielding more accurate results [1].
+
+### FPQR Algorithm
+
+Assume you have a covariate matrix $X \in \mathbb{R}^{N \times p}$ and response matrix $Y \in \mathbb{R}^{N \times r}$ that are both mean-centered. Then, you can decompose $X$ and $Y$ as
+
+\begin{equation}
+X=TP^t+E
+\end{equation}
+
+\begin{equation}
+Y=TQ^t+F
+\end{equation}
+
+where $T \in \mathbb{R}^{N\times h}$ is our score matrix, $P \in \mathbb{R}^{p\times h}$ and $Q \in \mathbb{R}^{r\times h}$ are our loading matrices, and $E \in \mathbb{R}^{N\times p}$ and $F \in \mathbb{R}^{N \times r}$ are our error matrices [1]. The goal of the fPQR  algorithm is to find $T$ that has maximal quantile covariance with $Y$, and then perform quantile regression of $Y$ on $T$ [1]. This first step is accomplished by taking the NIPALs algorithm developed for Partial Least Squares Regression, and replacing covariance with one of the versions of quantile covariance described above [1]. You can see the algorithm is more detail below. 
+
+
+\begin{algorithm}[H]
+\DontPrintSemicolon
+\SetAlgoLined
+\SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
+\Input{$ Y_0\in \mathbb{R}^{N \times r}$, $ X_0 \in \mathbb{R}^{N \times p}$, $\tau \in (0,1)$, and $qcov$ chosen quantile covariance metric}
+\Output{$T$, $P$, $Q$, $W$}
+\BlankLine
+\For{$i = 1:h$}{
+    $S_{1, \tau} \leftarrow qcov_{\tau}(X_{i-1}, Y_{i-1})$\;
+     $w_i \leftarrow$ eigenvector associated with largest eigenvalue of $S_{1, \tau}S_{1, \tau}^t$\;
+    $t_i \leftarrow X_{i-1}w_i$\;
+    $p_i \leftarrow \frac{X_{i-1}t_i}{t_i^tt_i}$\;
+    $q_i \leftarrow \frac{Y_{i-1}t_i}{t_i^tt_i}$\;
+    $X_i \leftarrow X_{i-1}-t_ip_i^t$\;
+    $Y_i \leftarrow Y_{i-1}-t_iq_i^t$
+}
+\caption{fPQR algorithm [1]}
+\end{algorithm} 
+ 
+The input is your predictor matrix $X_0$, response matrix $Y_0$, quantile you want to predict $\tau$, number of components $h$ for $T$, and the version of quantile covariance you want to use $qcov$ [1]. The output are the matrices $T$, $P$, $Q$, and $W$, where the columns of each matrix are specified in each iteration [1]. An important note is that line 3 of this algorithm is equivalent to finding $w_a$ such that
+
+\begin{equation}
+w_a= \underset{w_a, \|w_a\|=1}{argmax} qcov_{\tau}(X_{a-1}w_a, Y_{a-1}) qcov_{\tau}(X_{a-1}w_a, Y_{a-1})^t 
+\end{equation}
+thus matching the heuristic that $T$ is chosen to have maximal quantile covariance with $Y$ [1].
+
+One you have calculated your matrix $T$, you perform quantile regression of $Y$ on $T$, yielding coefficients
+
+\begin{equation}
+\hat{\Gamma}= \underset{\Gamma}{argmin}\sum_{i=1}^{n} \rho_{\tau}(Y_i- t_i^t\Gamma)
+\end{equation}
+
+and then convert $\hat{\Gamma}$ into coefficients for X:
+
+\begin{equation}
+\hat{\beta}_{\tau}= W(P^tW)^{-1}\hat{\Gamma}
+\end{equation}
+
+
+[1]. According to [1], the two main advantages of this algorithm is that it can handle both high dimensional and multicollinear data through dimension reduction to a set of orthogonal predictors, and that these predictors are designed to have maximal quantile covariance with the response.
+
+
+## Hierarchical Mixture Model
+
+### Background
+#### Solving Quantile Regression using E-M Algorithm \newline
+\
+One framework to solve a quantile regression problem for quantile $\tau$ is to specify
+
+\begin{equation}
+Y_i=X_i\beta_{\tau}+U_i
+\end{equation}
+
+where $U_i$ belongs to an assymetric Laplace distribution (ALD), which has density
+
+\begin{equation}
+h_{\tau}(u|\alpha)=\tau(1-\tau)e^{-\rho_{\tau}(u/\alpha)}/\alpha
+\end{equation}
+
+[3]. Zhou et al. (2014) showed that this this problem could be solved using an EM algorithm  where the M-step involves fitting a normal linear model using weighted least squares, and the E-step involves updating the weights [3].
+
+To do so, you let $u=(u_1, \ldots u_n)^t$, where $u_i=y_i -x_i\beta_\tau$, and let $w=(w_1, \ldots w_n)^t$ be the latent weights [3]. Then, suppose $(u_i, w_i)$ have joint distribution
+
+\begin{equation}
+p(u_i,w_i|\beta_{\tau})=\frac{2\tau(1-\tau)}{\sqrt{2\pi w_i}}e^{-\frac{(u_i- (1 -2\tau)w_i)^2}{2w_i}}e^{-2\tau(1-\tau)w_i}
+\end{equation}
+
+where
+
+\begin{equation}
+w_i \sim exponential(2\tau(1-\tau))
+\end{equation}
+
+and
+
+\begin{equation}
+u_i|w_i \sim Normal((1 -2\tau)w_i, w_i)
+\end{equation}
+
+[3]. Calculations would show that the marginal density of $u_i$ is given by equation (17) with $\alpha=\frac{1}{2}$ and that $w_i^{-1}|u_i$ is Inverse Gaussian:
+
+\begin{equation}
+w_i^{-1}|u_i \sim \mathcal{I}\mathcal{G}(|u_i|^{-1},1)
+\end{equation}
+
+[3]. Combining equations (16) and (20) we have:
+
+\begin{equation}
+Y|w \sim Normal(X\beta_{\tau}+(1-2\tau)w, W)
+\end{equation}
+where $W=diag(w)$ [3].
+
+Thus, by combining equations (21) and (22), Zhou et al. (2014) developed an EM algorithm to solve for $\beta_{\tau}$, which you can see in more detail below [3]. You start by initializing $\hat{\beta}_{\tau}'$ to be its OLS estimate [3]. Then, for each E-step, you set the inverse weights $w_i^{-1}$ to be their current estimated conditional mean $|u_i|^{-1}$, and then for the M-step you update $\beta_{\tau}'$ via weighted least squares with:
+
+\begin{equation}
+\beta_{\tau}'= (X^t\hat{W}^{-1}X)^{-1}X^t\hat{W}^{-1}[Y-(1-2\tau)\hat{w}]
+\end{equation}
+
+[3]. The algorithm terminates when $l$, the conditional log-likelihood of $y|w$, converges [3].
+
+\begin{algorithm}[H]
+\DontPrintSemicolon
+\SetAlgoLined
+Initialize $\epsilon >0$, $\delta \leftarrow 2\epsilon$ \;
+Initialize $\hat{\beta}_{\tau}' \leftarrow (X^tX)^{-1}X^tY$\;
+\While{ $ \delta > \epsilon$}{
+    E-step: $\hat{w}_i^{-1} \leftarrow |y_i -X_i\hat{\beta}_{\tau}'|^{-1}$ \;
+    M-step: $\hat{\beta}_{\tau}(X^t\hat{W}^{-1}X)^{-1}X^t\hat{W}^{-1}[Y-(1-2\tau)\hat{w}]$\;
+    $\delta \leftarrow |l(y|X,w,\hat{\beta}_{\tau}')-l(y|X,w,\hat{\beta}_{\tau})|$\;
+    $\hat{\beta}_{\tau}' \leftarrow \hat{\beta}_{\tau}$\
+    
+    
+}
+\caption{Quantile Regression EM (QREM) algorithm}
+\end{algorithm} 
+
+#### Extending E-M Algorithm to Mixed Effect Models \newline
+\
+For mixed effect models, you assume
+
+\begin{equation}
+Y=X\beta+ Zv + U
+\end{equation}
+
+where $Z$ is your random effect matrix, and $v$ is is your random effects parameter that follows a multivariate normal distribution with zero mean and covariance matrix $K$ [3]. Conditional on $v$, $w_i$, $u_i|w_i$, and $w_i^{-1}|u_i$ have the same distributions as given in equations $(19)-(21)$ [3]. You also assume that $w_i^{-1}|u_i$ are independent conditional on $v$, and that $U$ is independent of $v$ [3]. 
+For this case, to solve for ${\beta}_{\tau}$, [3] developed a Generalized Alternating Minimization (GAM) algorithm, with one forward step (extension of E-step), and three backward steps (extension of M-step). The forward step is the same as the E-step for the QREM algorithm, except you have to take into account $Zv$ when calculating $u_i$ [3]. The three backward steps are to estimate $\hat{K}$ using Restricted Maximum Likelihood Estimation (REML), $\hat{\beta}_{\tau}'$  using the best linear unbiased estimator (BLUE), and $\hat{v}$ using the best linear unbiased predictor (BLUP). The algorithm terminates when $l$, the conditional log-likelihood of $y|w,v$, converges. More detail can be seen below.
+
+\begin{algorithm}[H]
+\DontPrintSemicolon
+\SetAlgoLined
+Initialize $\epsilon >0$, $\delta \leftarrow 2\epsilon$ \;
+Initialize $\hat{\beta}_{\tau}' \leftarrow (X^tX)^{-1}X^tY$, $\hat{v}=0$ \;
+\While{ $ \delta > \epsilon$}{
+    F-step: $\hat{w}_i^{-1} \leftarrow |y_i -X_i\hat{\beta}_{\tau}'-z_i\hat{v}|^{-1}$ \;
+    B-step (REML): $\hat{K} \leftarrow$ REML for $K$ given $\hat{w}$ \;
+    B-step (BLUE): $\hat{\beta}_{\tau} \leftarrow$ BLUE for $\beta_{\tau}$ given $\hat{w}$\;
+    B-step (BLUP): $\hat{v} \leftarrow$ BLUP for $\hat{v}$ given $\hat{w}$\;
+    $\delta \leftarrow |l(y|v,X,w,\hat{\beta}_{\tau}')-l(y|v,X,w,\hat{\beta}_{\tau})|$\;
+$\hat{\beta}_{\tau}'\leftarrow \hat{\beta}_{\tau}$
+}
+\caption{Extended Quantile Regression EM (EQREM) algorithm}
+\end{algorithm} 
+
+### Algorithm for Hierarchical Mixture Model
+ For a hierarchical mixture model, you consider all the predictors you are definitely including in your model to be fixed effects, and the predictors you are choosing from to be random effects [3]. In the simplified case where you have no fixed covariates, you would specify your model as:
+ 
+ \begin{equation}
+ y_i= \beta_0 +\sum_{k=1}^{p}x_{ik}\gamma_{k}v_k + \epsilon_i
+ \end{equation}
+  where $\epsilon_i \overset{iid}{\sim} N(0, \sigma_{E}^2)$,
+  $v_k\overset{iid}{\sim} N(\mu, \sigma_{V}^2)$, and $\gamma_{k} \overset{iid}{\sim} Multinomial(-1,0,1; p_{L}, p_{0}, p_{R})$ [3]. In this case, the goal is to estimate for which $k$, $\gamma_{k} \neq 0$ [3]. According to [3], you can solve this problem using a (GAM) algorithm, where the B-step is maximizing a normal linear mixed model likelihood given $\{\gamma_{k}\}$ and the F-step is updating $\{\gamma_{k}\}$. This  method can be implemented through the $SEMMs$ package,  which takes in an initial set of variables $V_0$, and at each iteration adds or removes a single variable if doing so increases the log-likelihood by more than $\delta >0$ [3]. This continues until it is no longer possible to increase the log-likelihood by more than $\delta$, and SEMMS outputs the resulting set of variables $V_f$, where $f$ is the number of iterations [3]. The output is written as $SEMMS(\textbf{y}, \textbf{X}, V_0)$ [3]. The details of the algorithm can be seen below.
+ 
+\begin{algorithm}[H]
+\DontPrintSemicolon
+\SetAlgoLined
+\SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
+\Input{$ \textbf{y}\in \mathbb{R}^N$, $ \textbf{X}\in \mathbb{R}^{N \times P}$, and $\tau \in (0,1)$}
+\Output{$\hat{\beta}_{\tau}$}
+Initialize $\epsilon >0$\;
+$l \leftarrow 0$ \;
+$S \leftarrow$  an initial subset of predictors for $q_{Y_i|X_i}(\tau)$\;
+\While{ $|l-l'|> \epsilon$}{
+    $l' \leftarrow l$ \;
+    $\hat{\beta}_{\tau} \leftarrow EQREM(y, X_{[S]}, \tau)$ \;
+    $\textbf{u}\leftarrow \textbf{y}-X_{[S]}\hat{\beta}_{\tau}$, for $i =1, \ldots , n$ \;
+    $S'=SEMMS(\textbf{y}- (1-2\tau)|\textbf{u}|, \textbf{X}, S)$\;
+    $S\leftarrow S'$\;
+    $l \leftarrow -2\sum_{i=1}^n \rho_{\tau}(u_i)$
+}
+\caption{Variable Selection for Quantile Regression}
+\end{algorithm} 
+
+The important steps of this algorithm are on line 6, where you use the EQREM algorithm specified above to update $\hat{\beta}_{\tau}$, and line 8, where you use the SEMMS package to update your set of included predictors $S$. According to [3], if the true model is $q_{Y_i|X_i}(\tau)= X_{[S]}{\beta}_{\tau}$, where $S$ is a subset of $L$ columns such that $L<<P$, then algorithm 4 is guaranteed to converge.
+
+# Proposed Method 
+
+My proposed method, fPQRHMM, is as follows:
+
+\begin{enumerate}
+\item Calculate $T$  using fPQR (Algorithm 1)
+\item  Calculate $\hat{\Gamma}$ using HMM (Algorithm 4)
+\item $\hat{\beta}_{\tau}=W(P^tW)^{-1}\hat{\Gamma}$
+\end{enumerate}
+
+I believe that performing variable selection on $T$ will perform better than variable selection directly on $X$ in cases where we have highly correlated predictors, since the components of $T$ are guaranteed to be orthogonal. I use the version of quantile covariance developed by Li et al. (2015), since it has the fastest runtime and tends to give the most accurate results [1].
+
+## Simulation Study
+
+### Setting
+For my simulation, I have response $Y \in \mathbb{R}^{100}$ and $X \in \mathbb{R}^{100 \times 100}$, with
+
+\begin{equation}
+Y_i= X_i \beta +  \epsilon_{i}
+\end{equation}
+
+
+  where $\epsilon_i \sim \chi^2(3)$. The predictor matrix $X$ is generated randomly using a multivariate normal distribution with mean $\textbf{0}$, and covariance matrix $\Sigma$ where:
+  
+  
+\begin{equation}
+\Sigma_{ij}=
+    \begin{cases}
+        runif(0,10), & \text{if } i=j \\
+        corr*\sqrt{A_{ii}A_{jj}}, & otherwise
+    \end{cases}
+\end{equation}
+ where $corr$ is the correlation among the covariates, and we vary that between 0, 0.5, and 0.9. The true coefficient $\beta$ is generated as:
+ 
+ \begin{equation}
+\beta_{j}=
+    \begin{cases}
+        runif(min,max), & \text{if } j \leq l \\
+        0, & otherwise
+    \end{cases}
+\end{equation}
+
+The ordered pair $(min, max)$ determines the size of $\beta$ and is varied between $(0,1)$ and $(15,20)$. The parameter $l$ determines the sparsity of $\beta$ and is varied between 10, 50, and 90. Once $X$ and $\beta$ have been generated, I will use my newly developed algorithm fPQRHMM to predict  quantiles $\tau= 0.1, 0.5, 0.9$ of $Y$. There are 54 combinations of $corr$, $(min,max)$, $l$, and $\tau$, and for each combination, I will perform 100 simulations. The baseline models for comparison will be using Algorithm 4 directly on $X$ (HMM), and fitting a model on the actual predictors (actual). I will evaluate the accuracy of the models using the the median check loss error over 100 simulations on a test set of size 50, where we define test check loss error to be
+ 
+ \begin{equation}
+\frac{1}{50}\sum_{i=1}^{50} \rho_{\tau}(Y_i- X_i\hat{\beta}_{\tau})
+\end{equation}
+
+I will also evaluate the model's speed using runtime in seconds.
+
+### Result
+
+Using HMM has better accuracy when $l=10$ and $corr$ is 0.1 or 0.5; otherwise, fPQRHMM is more accurate. The fPQRHMM algorithm is even more accurate than fitting the actual model when you have $(min, max)=(0,1)$ and $l=90$. In general, as you increase $l$, the check loss error increases for both fPQRHMM and HMM, but increases less for fPQRHMM. The effect of $(min, max)$ also appears to be significant, as for $(min, max)=(0,1)$, fPQRHMM never results in a test check loss error more than two times higher than the actual model, whereas for $(min, max)=(15,20)$, fPQRHMM never has a test check loss error less than nine times worse than the actual model. This issue is more pronounced for HMM, except when $l=10$ and $corr$ is 0.1 or 0.5, where HMM is able to yield a check loss comparable to that of the actual model for $(min, max)=(15,20)$. There does not appear to be a consistent effect of $corr$, except for $l=10$ and $(min, max)=(15,20)$, where the fPQRHMM check loss decreases consistently as correlation increases, whereas the check loss for HMM is comparable to that of the actual model for $corr$ equal to 0.1 and 0.5, and then sharply increases for $corr$=0.9. In most cases this increase yields a check loss error slightly higher than that for fPQRHMM. Finally, in general, the check loss error is worse when predicting the median, and of comparable size when predicting $\tau=0.1$ or $0.9$. The results can be seen in the Appendix in Table 1.
+
+In terms of run time, HMM is faster than than fPQRHMM in 45 of the 54 conditions. For the 9 cases where fPQRHMM had a faster runtime, in seven of them $corr=0.5$, in eight of them $l=50$ or $90$, and in seven of them $(min,max)=(0,1)$. Also, in general, runtime increases as you go from $(min, max)=(0,1)$ to $(min, max)=(15,20)$, and as $l$ increases, although the latter effect is less pronounced. Additionally, the runtime is shortest when predicting the median and is similar for $\tau=0.1$ and $0.9$, with an effect size comparable that of changing $(min, max)$. The results can be seen in the Appendix in Table 2.
+
+### Analysis
+The main factor affecting the relative performance of fPQRHMM and HMM is the sparsity of $\beta$, with HMM generally performing better for sparse $\beta$ and fPQRHMM performing better for dense $\beta$. This makes sense, given that for sparse $\beta$, Algorithm 4 is guaranteed to converge. The relatively poor performance of fPQRHMM in this case could be explained by the fact that even when you calculate a sparse $\hat{\gamma}$ when regressing $Y$ on $T$, this generally yields a dense $\hat{\beta}_{\tau}$ when transformed via equation (15). However, this turns out to be an advantage when $\beta$ is dense. In this case, Algorithm 4  still tends to yield a sparse solution, which is a problem if you are doing variable selection directly on the predictors, as is the case with the HMM algorithm. However, since a sparse $\hat{\gamma}$ still yields a dense $\hat{\beta}_{\tau}$, then this is not a problem for fPQRHMM. 
+
+Even in cases where fPQRHMM outperforms HMM, it still does not appear to be able handle cases where the magnitude of $\beta$ is large effectively. This may be because the columns of $T$ are in order of decreasing quantile covariance, so  the assumption from 3.2.2 that the non-null coefficients for T come from the same distribution, written as $v_k\overset{iid}{\sim} N(\mu, \sigma_{V}^2)$, may be incorrect. 
+
+It also appears that the effect of correlation among predictors is less important than the sparsity or magnitude of $\beta$ is determining model accuracy, as the expected improvement in performance of fPQRHMM relative to VS for increasing $corr$ only occurred when $l=10$ and $(min, max)=(15,20)$. 
+
+One noticeable trend was that the prediction accuracy was lowest for predicting the median and similar for predicting $\tau$=0.1 and $\tau$=0.9. This may be due to density of the error $u_i$ equation (17) being directly proportional to $\tau(1-\tau)$, which is maximal at $\tau$=0.5, and identical at $\tau$=0.1 and $\tau$=0.9.
+
+In terms of runtime, there was not expected to be any cases where fPQRHMM was faster than HMM, given the additional required steps of deriving $T$, and converting $\hat{\Gamma}$ into$\hat{\beta}_{\tau}$. However, as noted in [1], and supported by these simulation results, these processes take less than 0.1 seconds combined. Thus, most of the difference in run time came from the time needed for variable selection. It is difficult to derive any consistent pattern for when variable selection on $T$ is faster than variable selection on $X$, except that the cases where variable selection for $T$ is fastest generally match the cases when PfQRHMM performed most well relative to HMM.
+
+This does make some sense, as since $T$ and $X$ are the same size then it would be expected that the difference in variable selection time would come down to difference in the number of iterations Algorithm 4 requires to converge. Thus, in cases where fPQRHMM is better suited to the problem, the initial estimate for the parameters may be more accurate, thus requiring less time for Algorithm 4 to converge than HMM.
+
+## Practical Example: Predicting Runs Allowed for MLB Teams
+ For my practical example, I gather data from FanGraphs for each of the 30 teams for each year from 2016-2022 (2020 excluded due to shortened season), resulting in a sample size of 180 team seasons [2]. For each team season, I consider the response to be the number of runs the team allows, and I consider three sets of predictors.
+ 
+\begin{enumerate} 
+\item DRS (Defensive Runs Saved) for each of the nine positions on team, normalized to fall between 0 and 100 [9 covariates]
+\item  fWAR (Fangraphs Wins Above Replacement) for team's pitching staff, also normalized to fall between 0 and 100 [1 covariate]
+\item All possible interactions terms between normalized DRS at each position [36 covariates]
+\end{enumerate}
+ 
+The first set of covariates gives a rough measure of the defensive quality of the team at each position, pitcher fWAR estimates how well a team's pitchers perform independent of the defense behind them, and the interaction terms are meant to capture if there are any pairs of positions where having two quality defenders has an impact on runs allowed. I perform quantile regression of runs allowed on these 46 predictors, for quantiles $0.1, \ldots, 0.9$,
+using both fPQRHMM and HMM. I use the years 2016-2019 (120 observations) as my training set, and 2021 and 2022 as my test set (60 observations). I compare both methods using check loss error on the test set.
+
+As you can see from Figure 1, HMM significantly outperforms fPQRHMM for all quantiles (Also see Table 3). Given these results, this suggests that we are in a setting where very few of the predictors are actually associated with the response. This is supported by Figure 2, where we see that the variable pitcher fWAR consistently has a much larger quantile covariance with the response than all the other predictors. This would indicate that in the true model, the only predictor may be pitcher fWAR.
+
+
+\begin{figure}[!htb]
+        \center{\includegraphics[width=15 cm, height=8 cm]
+        {BBall.pdf}}
+        \caption{\label{fig:my-label} Check loss error of  fPQRHMM vs HMM in predicting various quantiles of Runs Allowed}
+  \end{figure}
+ \begin{figure}[!htb]
+        \center{\includegraphics[width=15 cm, height=8 cm]
+        {FinalFigure.pdf}}
+        \caption{\label{fig:my-label} Li et al. [2015] quantile covariance of each predictor from the baseball dataset with the response $\textit{Runs Allowed}$. The red dashed line indicates the variable pitcher fWAR}
+  \end{figure}
+
+# Conclusion
+
+Based on the results of the simulations and working with the baseball dataset, the novel method fPQRHMM is best suited to cases where high proportion of the predictors considered are associated with the response and the size of the coefficients is small. Otherwise, HMM either yields more accurate results, or both methods do poorly. The inability of fPQRHMM to perform well when the magnitude of the effect size is large warrants further exploration of ways to select the components from the score matrix T. One area of particular interest is to do some pre-processing variable selection on T using cross-validation error or Lasso before using HMM [3], to see if this yields better results.
+
+\newpage
+# Appendix
+
+\begin{table}
+\begin{tabular}{|c|c|c|c|c|c|c|}
+    \hline
+    $\tau$ &  (max,min)&  corr & l & CLfPQRHMM & CLHMM & CLActual \\
+    \hline
+    0.1 & (0,1) & 0 & 10 & 0.751 & 0.465 & 0.308\\
+    \hline
+    0.1 & (0,1) & 0 & 50 & 1.41 & 1.60 & 0.830\\
+    \hline
+    0.1 & (0,1) & 0 & 90 & 1.83 & 2.17 & 3.63 \\
+    \hline
+    0.1 & (0,1) & 0.5 & 10 & 0.572& 0.483& 0.295  \\
+    \hline
+    0.1 & (0,1) & 0.5 & 50 & 0.931& 2.40& 0.892 \\
+    \hline
+    0.1 & (0,1) & 0.5 & 90 & 1.17 & 4.06 & 3.30\\
+    \hline
+    0.1 & (0,1) & 0.9 & 10 & 0.431 & 0.434 & 0.300 \\
+    \hline
+    0.1 & (0,1) & 0.9 & 50 & 0.961 & 1.46 & 0.831\\
+    \hline
+    0.1 & (0,1) & 0.9 & 90 & 1.56 & 2.52 & 3.38\\
+    \hline
+    0.1 & (15,20) & 0 & 10 & 16.7 & 0.361 & 0.297 \\
+    \hline
+    0.1 & (15,20) & 0 & 50 & 36.1 & 52.7 & 0.834 \\
+    \hline
+    0.1 & (15,20) & 0 & 90 & 49.6 & 72.0 &3.45 \\
+    \hline
+    0.1 & (15,20) & 0.5 & 10 & 10.6 & 0.323 & 0.292 \\
+    \hline
+    0.1 & (15,20) & 0.5 & 50 & 24.4 & 79.6 & 0.836 \\
+    \hline
+    0.1 & (15,20) & 0.5 & 90 & 31.1 & 142 & 3.45\\
+    \hline
+    0.1 & (15,20) & 0.9 & 10 & 7.53 & 9.44 & 0.300\\
+    \hline
+    0.1 & (15,20) & 0.9 & 50 & 29.8 & 49.1& 0.836\\
+    \hline
+    0.1 & (15,20) & 0.9 & 90 & 54.3 & 88.4 & 3.42\\
+    \hline
+    0.5 & (0,1) & 0 & 10 & 1.42 & 1.11  & 0.953\\
+    \hline
+    0.5 & (0,1) & 0 & 50 & 2.06 & 3.11 & 1.40\\
+    \hline
+    0.5 & (0,1) & 0 & 90 & 2.53 & 4.93 & 3.63 \\
+    \hline
+    0.5 & (0,1) & 0.5 & 10 & 1.27 & 1.18 &0.939  \\
+    \hline
+    0.5 & (0,1) & 0.5 & 50 & 1.89 & 4.77& 1.42\\
+    \hline
+    0.5 & (0,1) & 0.5 & 90 & 2.73 & 8.27& 3.47 \\
+    \hline
+    0.5 & (0,1) & 0.9 & 10 & 1.11 & 1.12 & 0.947\\
+    \hline
+    0.5 & (0,1) & 0.9 & 50 & 2.22 & 3.20 & 1.37\\
+    \hline
+    0.5 & (0,1) & 0.9 & 90 & 3.39 & 5.62 & 3.62 \\
+    \hline
+    0.5 & (15,20) & 0 & 10 & 19.2 & 0.968 & 0.962\\
+    \hline
+    0.5 & (15,20) & 0 & 50 & 42.1 & 105 & 1.34\\
+    \hline
+    0.5 & (15,20) & 0 & 90 & 55.8 & 152 & 3.57 \\
+    \hline
+    0.5 & (15,20) & 0.5 & 10 & 15.4 & 1.06 &0.945 \\
+    \hline
+    0.5 & (15,20) & 0.5 & 50 & 45.2& 172 & 1.38 \\
+    \hline
+    0.5 & (15,20) & 0.5 & 90 & 76.2 & 297 & 3.58 \\
+    \hline
+    0.5 & (15,20) & 0.9 & 10 & 13.7 & 18.8 & 0.946  \\
+    \hline
+    0.5 & (15,20) & 0.9 & 50 & 59.6 & 106 & 1.38 \\
+    \hline
+    0.5 & (15,20) & 0.9 & 90 & 99.9 & 190 & 3.59\\
+     \hline
+    0.9 & (0,1) & 0 & 10 & 0.921 & 0.752 & 0.615\\
+    \hline
+    0.9 & (0,1) & 0 & 50  & 1.41 & 1.65 & 1.35 \\
+    \hline
+    0.9 & (0,1) & 0 & 90 & 1.79 & 2.26 & 3.73\\
+    \hline
+    0.9 & (0,1) & 0.5 & 10 & 0.768 & 0.739 & 0.653  \\
+    \hline
+    0.9 & (0,1) & 0.5 & 50 & 1.07 & 2.29 & 1.37\\
+    \hline
+    0.9 & (0,1) & 0.5 & 90 & 1.30 & 4.22 & 3.48\\
+    \hline
+    0.9 & (0,1) & 0.9 & 10 & 0.690 & 0.671 & 0.626  \\
+    \hline
+    0.9 & (0,1) & 0.9 & 50 & 0.965 &  1.54 & 1.37\\
+    \hline
+    0.9 & (0,1) & 0.9 & 90 & 1.19 & 2.48 & 3.62 \\
+    \hline
+    0.9 & (15,20) & 0 & 10 & 15.5 &  0.994 & 0.649 \\
+    \hline
+    0.9 & (15,20) & 0 & 50 & 33.9 & 51.5 & 1.39\\
+    \hline
+    0.9 & (15,20) & 0 & 90 & 50.0 & 71.3 & 3.59\\
+    \hline
+    0.9 & (15,20) & 0.5 & 10 & 11.7 & 0.729 & 0.624  \\
+    \hline
+    0.9 & (15,20) & 0.5 & 50 & 23.3 & 84.8 & 1.32\\
+    \hline
+    0.9 & (15,20) & 0.5 & 90 & 32.9 & 144 & 3.61\\
+    \hline
+    0.9 & (15,20) & 0.9 & 10 & 6.58 & 9.45 & 0.661\\
+    \hline
+    0.9 & (15,20) & 0.9 & 50 & 22.1 & 45.9 & 1.30\\
+    \hline
+    0.9 & (15,20) & 0.9 & 90 & 37.2 & 84.5 & 3.72\\
+    \hline
+\end{tabular}
+\caption{\label{demo-table} Check loss error for Simulation, CL=Check Loss}
+\end{table}
+
+
+\begin{table}
+\begin{tabular}{|l|l|l|l|l|l|l|l|}
+    \hline
+     fPQRHMMDec & fPQRHMMsel & fPQRHMMfit & fPQRHMMTrans & HMMsel & HMMfit & fPQRHMMtot & HMMtot \\
+    \hline
+    0.05 &2.52 & 0.04 &0&2.17& 0.05&2.61&2.21\\
+    \hline
+    0.04 & 3.05 & 0.05&0& 2.22& 0.05&3.16&2.29\\
+    \hline
+     0.05 & 3.34 & 0.05&0 & 2.29& 0.045&3.43&2.34\\
+    \hline
+     0.05& 2.72& 0.03&0 & 2.27& 0.06&2.81&2.34 \\
+    \hline
+     0.05& 3.27& 0.04&0 & 3.52& 0.11&3.35&3.67\\
+    \hline
+    0.05 & 3.22 & 0.05&0& 3.39& 0.14&3.33&3.55\\
+    \hline
+     0.05 & 2.42 & 0.03 &0& 1.83& 0.04&2.50&1.90\\
+    \hline
+     0.05 & 2.78 & 0.03&0& 1.97& 0.06&2.87&2.045\\
+    \hline
+     0.05 & 2.79 & 0.03&0& 2.06& 0.055&2.87&2.11\\
+    \hline
+     0.05 & 3.83 & 0.08&0& 3.39& 0.07&3.96&3.45 \\
+    \hline
+     0.05 & 4.02 & 0.09&0& 2.78& 0.06&4.17 &2.88\\
+    \hline
+     0.05 & 4.16 & 0.085&0& 2.83& 0.06&4.28&2.95 \\
+    \hline
+     0.05 & 4.35 & 0.08 &0& 3.92& 0.085&4.53&4.01\\
+    \hline
+     0.05 & 4.22 & 0.075 &0& 3.96& 0.120&4.36&4.17\\
+    \hline
+     0.05 & 4.14 & 0.07&0& 4.37& 0.14&4.30&4.50\\
+    \hline
+     0.05 & 4.02 & 0.07&0& 2.37& 0.06&4.15&2.44\\
+    \hline
+     0.05 & 4.15 & 0.06&0& 2.49& 0.065&4.28&2.56\\
+    \hline
+     0.05 & 3.81 & 0.05&0& 2.61& 0.08&3.90&2.70\\
+    \hline
+    0.05 & 1.74  & 0.03&0& 1.79& 0.03&1.79&1.84\\
+    \hline
+     0.05 & 2.10 & 0.05&0& 2.21& 0.055&2.19&2.29\\
+    \hline
+     0.05 & 2.15 & 0.05 &0& 2.11& 0.05&2.23&2.16\\
+    \hline
+     0.05 & 1.90 &0.03 &0& 1.81& 0.04&1.97&1.85\\
+    \hline
+     0.05 & 2.38& 0.03&0& 2.26& 0.07&2.48&2.38\\
+    \hline
+     0.05 & 2.45 & 0.03 &0& 2.55& 0.07&2.52&2.60\\
+    \hline
+     0.05 & 1.95 & 0.03&0& 1.45& 0.04&2.03&1.51\\
+    \hline
+    0.05 & 2.30 & 0.03&0& 1.51& 0.04&2.37&1.57\\
+    \hline
+    0.05 & 2.41 & 0.03&0 & 1.68& 0.04&2.50&1.72\\
+    \hline
+     0.05 & 3.04 & 0.08&0& 2.72& 0.08&3.18&2.83\\
+    \hline
+     0.05 & 3.31 & 0.10&0& 3.01& 0.08&3.47&3.18\\
+    \hline
+    0.05 & 3.38 & 0.10&0& 2.69 & 0.06&3.55&2.77\\
+    \hline
+    0.05 & 3.25 &0.07&0& 2.87& 0.06&3.39&2.97\\
+    \hline
+     0.05 & 3.65 & 0.07 &0& 3.01& 0.105&3.78&3.15\\
+    \hline
+     0.05 & 3.29 & 0.06&0& 3.25 & 0.145&3.43&3.39\\
+    \hline
+     0.05 & 3.14 & 0.06 &0& 1.96& 0.05&3.26 &2.02\\
+    \hline
+     0.05 & 3.29 & 0.06 &0& 2.10& 0.05&3.46&2.16\\
+    \hline
+     0.05 & 3.20 & 0.05&0& 2.15& 0.06&3.30&2.25\\
+     \hline
+     0.05 & 2.56 & 0.03&0& 2.10& 0.05&2.65&2.17\\
+    \hline
+     0.05 & 2.95 & 0.05&0 & 2.21& 0.055&3.05&2.25\\
+    \hline
+    0.05 & 3.29 & 0.06&0& 2.14& 0.05&3.47&2.18\\
+    \hline
+     0.05 & 2.75 & 0.035 &0 & 2.30& 0.06&2.83&2.37\\
+    \hline
+     0.05 & 3.17 & 0.05&0& 3.42& 0.11&3.27&3.57\\
+    \hline
+     0.05 & 3.21 & 0.05&0& 3.49& 0.12&3.31&3.68\\
+    \hline
+     0.05 & 2.64 & 0.03 &0& 1.99& 0.04 &2.72&2.03\\
+    \hline
+    0.05 &  2.78 & 0.03&0& 1.97& 0.06&2.88&2.02\\
+    \hline
+     0.05 & 2.83 & 0.03 &0& 2.08& 0.06&2.94&2.16\\
+    \hline
+     0.05 &  4.01 & 0.08&0& 3.34& 0.08 &4.18&3.43\\
+    \hline
+     0.05 & 3.97 & 0.09&0& 2.76& 0.06&4.12&2.86\\
+    \hline
+     0.05 & 4.26 & 0.08&0& 2.83& 0.06&4.42&2.93\\
+    \hline
+     0.05 & 4.55 & 0.08&0& 4.15& 0.12&4.69&4.31\\
+    \hline
+     0.05 & 4.34 & 0.08&0& 3.97& 0.14&4.50&4.16\\
+    \hline
+     0.05 & 4.26 & 0.06&0& 4.24& 0.14&4.40&4.44\\
+    \hline
+    0.05 & 4.14 & 0.06&0& 2.28& 0.06&4.28&2.35\\
+    \hline
+     0.05 & 4.16 & 0.06&0& 2.53& 0.08&4.29&2.62\\ 
+    \hline
+     0.05 & 4.10 & 0.06&0& 2.67& 0.07&4.21&2.73\\
+    \hline
+\end{tabular}
+\caption{\label{demo-table} Runtime for Simulation (s), Dec: Decomposition time (s), sel: model selection time (s), fit: time to fit selected model (s), trans: time to transform $\hat{\Gamma}$ into $\hat{\beta} _{\tau}$ (s) t: total time (s). Same order as Table 1}
+\end{table}
+
+
+
+\begin{table}
+\begin{tabular}{|l|l|l|l|l|l|l|l|l|l|}
+    \hline
+      $\tau$ &  0.1 &  0.2 & 0.3 & 0.4 & 0.5 & 0.6 & 0.7 & 0.8 & 0.9  \\
+    \hline
+    fPQRHMM & 22.5 & 42.6 & 56.3& 75.2 & 94.1 & 112 &139&124&117\\
+    \hline
+    HMM & 9.58 & 15.99 & 20.2 & 23.7 & 24.2 & 23.8&23.3& 21.5& 12.8\\
+  \hline
+\end{tabular}
+\caption{\label{demo-table} Check loss error of fPQRHMM vs HMM for predicting Runs Allowed, $\tau$: quantile you are predicting}
+\end{table}
+
+
+\newpage
+
+# References
+\begin{enumerate}
+       \item $\acute{A}$lvaro M$\acute{e}$ndez-Civieta, M. Carmen Aguilera-Morillo, and Rosa E. Lillo. Fast Partial Quantile Regression. $\textit{Chemometrics and Intelligent Laboratory Systems}$. 223: Article 104533, 15 April 2021. doi:  https://doi.org/10.1016/j.chemolab.2022.104533.
+       \item Fangraphs, available at: https://www.fangraphs.com/leaders.aspx
+      \item Haim Bar, James G. Booth, Martin T. Wells. Mixed effect modelling and variable selection for quantile regression. $\textit{Statistical Modelling}$. 0(0), 2021. doi: 10.1177/1471082X211033490.
+
+\end{enumerate}
+
+ 
+
+
+
+

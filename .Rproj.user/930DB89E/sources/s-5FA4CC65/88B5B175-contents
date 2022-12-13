@@ -1,0 +1,68 @@
+---
+title: "fPQRHMM"
+author: "Thomas Whitehead"
+date: "12/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This package `fPQRHMM` performs dimension reduction for Quantile Regression by using a combination of the `fPQR` algorithm developed by Civieta et al. in 2021, and the `HMM` algorithm developed by Bar et al. in 2021. It uses source codes from the `QREM` and `SEMMS` packages written by Haim Bar and is partially based on the `fPQR` package written by Álvaro Méndez Civieta
+
+```{r}
+library(fPQRHMMal)
+```
+
+### fPQR_fit
+The `fPQR_fit` function takes as inputs a predictor matrix $X_0$, response matrix $Y_0$, and quantile $q$. It then decomposes $X_0$ into a score matrix $T$ that has maximal quantile covariance with $Y_0$. Then, using an HMM algorithm, it performs variable selection for quantile regression of $Y$ on $T$. Finally, it fits the chosen model for quantile regression of $Y$ on $T$, and then converts the resulting coefficients into coefficients $\hat{\beta}_q$ for $X_0$. The output is a list that includes $\hat{\beta}_q$, the fitted model of $Y_0$ on $T$, and the run times for decomposition of $Y_0$ into $T$, variable selection, model fitting, and coefficient transformation. An example with randomly generated $X_0$ and $Y_0$ and $q=0.5$ is given below, along with plot of the predicted vs actual coefficients of the model.
+```{r}
+library(MASS)
+X_0=mvrnorm(150, mu=rep(0,100), Sigma=diag(100))
+beta=rep(1,101)
+Y_0= beta[1]+ X_0%*%beta[-1] + rnorm(100)
+mod=fPQR_fit(X_0[1:100,],as.matrix(Y_0[1:100]),0.5)
+```
+
+```{r, echo=FALSE}
+matplot(1:101, cbind(as.matrix(mod[[1]]),as.matrix(beta)), xlab= 'Predictor Number', ylab='Coefficient Value', type ='b', col=1:2, pch=1, main="Predicted vs Actual Covariates")
+legend(x='topleft',legend=c('Predicted', 'Actual'), pch=1, col=1:2)
+```
+
+# qcov_li
+`qcov_li` is used during`fPQr_fit` to calculate a quantile analog of covariance developed by Li et al. in 2015,
+```{r}
+quantile_cov=qcov_li(as.matrix(X_0[,1]), Y_0, 0.5)
+quantile_cov
+```
+
+# signflip_svd
+`signflip_svd` is used during the `fPQR_fit` to maintain consistency across multiple Singular Value Decompositions. Its inputs are the first column of $U$ ($u_1$) and the first row of $V$ ($v_1$) from the SVD of the matrix $S_{1,q}S_{1_q}^t=qcov_{li}(X_0,Y_0,q)qcov_{li}(X_0,Y_0,q)^t$
+
+If the largest value of first column $u_1$ is positive, then `signflip_svd` outputs $u_1$ and $v_1$. If the largest value of $u_1$ is negative, then `signflip_svd` outputs $-u_1$ and $-v_1$.
+
+```{r}
+cov=qcov_li(as.matrix(X_0), Y_0, 0.5)%*% t(qcov_li(as.matrix(X_0), Y_0, 0.5))
+u_1=svd(cov)$u[,1]
+v_1=svd(cov)$v[,1]
+flip_u1=signflip_svd(u_1, v_1)
+#Original u
+u_1[1:10]
+#Flipped u
+flip_u1[[1]][1:10]
+#Original v
+v_1[1:10]
+#Flipped v
+flip_u1[[2]][1:10]
+```
+
+# check_lossTE
+
+`check_lossTE` takes in a proposed solution $\beta_{q}$, test data $X_{test}$ and $Y_{test}$, and q, and calculates the resulting check loss error.
+
+```{r}
+beta_q=mod[[1]]
+CL=check_lossTE(beta_q, X_0[101:150,], Y_0[101:150],0.5)
+CL
+```

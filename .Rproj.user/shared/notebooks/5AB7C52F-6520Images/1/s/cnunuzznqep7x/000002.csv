@@ -1,0 +1,5 @@
+"0","# quantile covarince plot"
+"0","matplot(as.matrix(seq(0.1,0.9,by=0.1)), corr_predresp,type=""b"", pch=1, col=1:46, xlab= 'Quantile predicted', ylab= 'Quantile Covariance', fig.caption=""This is aplot Quantile Covariance of each predictor from the baseball dataset with the response Runs Allowed. The red dashed Line indicates the variable pitcherfWAR"")"
+"2","Error in matplot(as.matrix(seq(0.1, 0.9, by = 0.1)), corr_predresp, type = ""b"",  : 
+  object 'corr_predresp' not found
+"

@@ -1,0 +1,25 @@
+---
+title: "Plots6520"
+author: "Thomas Whitehead"
+date: '2022-12-05'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+# quantile covarince plot
+matplot(as.matrix(seq(0.1,0.9,by=0.1)), corr_predresp,type="b", pch=1, col=1:46, xlab= 'Quantile predicted', ylab= 'Quantile Covariance', fig.caption="This is aplot Quantile Covariance of each predictor from the baseball dataset with the response Runs Allowed. The red dashed Line indicates the variable pitcherfWAR")
+
+
+
+```
+
+```{r}
+# Baseball plot
+matplot(seq(0.1,0.9, by=0.1),type="b" ,cbind(check_lossfPQRBball,check_lossVSBBall),pch=1,col = 1:2, xlab='Quantile Predicting', ylab='Check_loss')
+legend("topleft", legend = c( 'fPQR+HMM', 'HMM'), col=1:2, pch=1)
+```
