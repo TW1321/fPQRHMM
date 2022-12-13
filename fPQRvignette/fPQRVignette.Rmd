@@ -1,5 +1,5 @@
 ---
-title: "fPQRHMM"
+title: "fPQRHMMal"
 author: "Thomas Whitehead"
 date: "12/13/2022"
 output: html_document
