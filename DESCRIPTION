@@ -1,0 +1,17 @@
+Package: fPQRHMMal
+Type: Package
+Title: Quantile Regression using fPQR and HMM algorithm
+Version: 0.1.0
+Author: Thomas Whitehead
+Maintainer: Thomas Whitehead <tnw9@cornell.edu>
+Depends: R (>= 4.1.0)
+Imports: parallel, KernSmooth, lme4, gam, SEMMS, corpcor, edgefinder, Matrix, QREM, MASS, stats
+Description: Performs dimension reduction and
+     and variable selection for quantile regression using fPQR and HMM algorithm.
+Encoding: UTF-8
+License: GPL-3
+LazyData: true
+RoxygenNote: 7.2.3
+Suggests: 
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

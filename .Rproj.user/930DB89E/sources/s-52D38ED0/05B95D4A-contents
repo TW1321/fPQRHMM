@@ -1,0 +1,196 @@
+# Hello, world!
+#
+# This is an example function named 'hello'
+# which prints 'Hello, world!'.
+#
+# You can learn more about package authoring with RStudio at:
+#
+#   http://r-pkgs.had.co.nz/
+#
+# Some useful keyboard shortcuts for package authoring:
+#
+#   Install Package:           'Ctrl + Shift + B'
+#   Check Package:             'Ctrl + Shift + E'
+#   Test Package:              'Ctrl + Shift + T'
+
+
+
+#' Fitting quantile regression model using fPQR and HMM algorithm
+#'
+#' @param X_0  predictor matrix
+#' @param Y_0 response matrix
+#' @param q  quantile you are trying to predict
+#'
+#' @return A list containing the following
+#' \itemize{
+#'   \item  rbind(intercept,beta): estimated regression coefficients.
+#'   \item  final_mod: Output from QREM on chosen model .
+#'   \item decomp_time: Amount of time for fPQR to decompose X to x_scores
+#'   \item select_time: Amount of time for QREM_vs (aka HMM) to run
+#'   \item fit_time: Amount of time for QREM to run
+#'   \item convert_time: Amount of time to convert coefficients to T to coefficients to X_0
+#'  }
+#'
+#'
+#' @export
+#'
+#' @examples X_0=mvrnorm(100, mu=rep(0,100), Sigma=diag(100))
+#' @examples beta=rep(1,100)
+#' @examples Y_0= X_0%*%beta+rnorm(100)
+#' @examples fPQR_mod= fPQR_fit(X_0, Y_0, 0.5)
+fPQR_fit <- function(X_0,Y_0,q) {
+
+  n_iter=0
+  X_init=scale(X_0,scale=FALSE)
+  Y_init=scale(Y_0, scale=FALSE)
+  n=nrow(X_0)
+  p=ncol(X_0)
+  r=ncol(Y_0)
+  n_components=p
+
+  x_weights=matrix(0, nrow=p, ncol=n_components)
+  y_weights=matrix(0, nrow=r, ncol=n_components)
+  x_scores=matrix(0,  nrow=n, ncol=n_components)
+  y_scores=matrix(0,  nrow=n, ncol=n_components)
+  x_loadings=matrix(0, nrow=p, ncol=n_components)
+  y_loadings=matrix(0, nrow=r, ncol=n_components)
+
+  start=proc.time()[3]
+  while(sum(X_init^2)>10^-10 & sum(Y_init^2)>10^-10) {
+    qcov_xy=matrix(0,nrow=p, ncol=r)
+    for (i in 1:r){
+      qcov_xy[,i]=qcov_li(X_init,Y_init[,i],q)
+    }
+    svd_cov=svd(qcov_xy)
+    x_weight=svd_cov$u[,1]
+    y_weight=svd_cov$v[1,]
+    flip_weights=signflip_svd(x_weight, y_weight)
+    x_weight=flip_weights[[1]]
+    y_weight=flip_weights[[2]]
+
+    x_score=X_init%*%x_weight
+    y_score=Y_init%*%y_weight
+
+    x_loading=(t(X_init)%*%x_score)/(t(x_score)%*%x_score)[1]
+    y_loading=(t(Y_init)%*%x_score)/(t(x_score)%*%x_score)[1]
+
+    X_init=X_init- x_score%*%t(x_loading)
+    Y_init=Y_init- x_score%*%t(y_loading)
+
+    x_weights[,n_iter+1]=x_weight
+    y_weights[,n_iter+1]=y_weight
+
+    x_scores[,n_iter+1]=x_score
+    y_scores[,n_iter+1]=y_score
+
+    x_loadings[,n_iter+1]=x_loading
+    y_loadings[,n_iter+1]=y_loading
+
+    n_iter=n_iter+1
+
+  }
+  decomp_time=proc.time()[3]-start
+
+  x_weights=x_weights[,1:n_iter]
+  y_weights=y_weights[,1:n_iter]
+
+  x_scores=x_scores[,1:n_iter]
+  y_scores=y_scores[,1:n_iter]
+
+  x_loadings=x_loadings[,1:n_iter]
+  y_loadings=y_loadings[,1:n_iter]
+
+  x_rot=x_weights%*%solve(t(x_loadings)%*%x_weights)
+  y_rot=y_weights%*%solve(t(y_loadings)%*%y_weights)
+
+  intercept=matrix(0, nrow=1, ncol=r)
+  beta=matrix(0, nrow=p, ncol=r)
+
+  select_time=0
+  fit_time=0
+  convert_time=0
+  for (i in 1:r){
+    Y_col=Y_0[,i]
+    dat_train=data.frame(Y_col,x_scores)
+    start=proc.time()[3]
+    select=QREM_vs(dat_train,1,2:ncol(dat_train),qn=q)
+    select_time=select_time+proc.time()[3]-start
+    var_selec=select$fittedSEMMS$gam.out$nn
+
+    if(length(var_selec)==0){
+      start=proc.time()[3]
+      final_mod=QREM(lm, Y_col~1, dat_train, qn=q)
+      fit_time=fit_time+proc.time()[3]-start
+      intercept[i]=final_mod$coef$beta[1]
+    }else{
+      dfsemms=dat_train[,c(1,1+var_selec)]
+      start=proc.time()[3]
+      final_mod=QREM(lm, Y_col~., dfsemms, qn=q)
+      fit_time=fit_time+proc.time()[3]-start
+      intercept[i]=final_mod$coef$beta[1]
+      start=proc.time()[3]
+      beta[,i]=as.matrix(x_rot[,var_selec])%*%as.matrix(final_mod$coef$beta[-1])
+      convert_time=convert_time+proc.time()[3]-start
+    }
+  }
+
+  fPQR_fit=list(rbind(intercept,beta),final_mod,decomp_time,select_time, fit_time, convert_time)
+}
+
+#' Calculates Quantile Covariance (based fPQR code from Civieta et al.)
+#'
+#' @param X- covariate matrix
+#' @param Y- response matrix
+#' @param q - quantile
+#'
+#' @return qcov_li: quantile covariance of X and Y
+#' @export
+#'
+#' @examples
+qcov_li<-function(X,Y, q){
+
+  n=nrow(X)
+  psi=q-((Y-quantile(Y,q))<0)
+  X_center=scale(X, scale=FALSE)
+  qcov_li=(1/n)*t((t(psi)%*%X_center))
+}
+
+
+#' Sign flip to ensure consistency across solvers (based on fPQR code from Civieta et al.)
+#'
+#' @param u
+#' @param v
+#'
+#' @return list of two items
+#' \itemize{
+#'   \item  potentially sign flipped u.
+#'   \item  potentially sign flipped v .
+#'
+#'  }
+#' @export
+#'
+#' @examples
+signflip_svd=function(u,v){
+
+  biggest_value_index=which(abs(u)==max(abs(u)))
+  largest_sign=sign(u[biggest_value_index])
+  signflip_svd=list(u*largest_sign, v*largest_sign)
+}
+#' Computes check loss for quantile regression model
+#'
+#' @param beta_pred: coefficients for mode:
+#' @param X_test: test set for predictor
+#' @param Y_test: test set for response
+#' @param q: quantile predicting
+#'
+#' @return check loss error
+#' @export
+#'
+#' @examples
+check_lossTE=function(beta_pred, X_test, Y_test,q){
+
+  test_pred=beta_pred[1]+as.matrix(X_test)%*%beta_pred[-1]
+  u=Y_test-test_pred
+  check_lossTE=mean(u*(q-(u<0)))
+}
+
